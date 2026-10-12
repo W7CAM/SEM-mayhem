@@ -198,15 +198,16 @@ The UI exposes the minimum hardware-test diagnostics: seven channel rows, three 
 
 ## Current validation state
 
-Local configure checks performed:
+Local build checks performed:
 
-- Root CMake configure for `-DBOARD=PRALINE` was attempted. The external app tier updater ran and regenerated/validated the tier linker scripts.
-- The configure could not proceed to compilation because `arm-none-eabi-gcc` and `arm-none-eabi-g++` are not installed in this environment.
-- A direct `firmware` subdirectory CMake attempt also failed before project compilation because the host AppleClang/macOS SDK installation cannot link a trivial test program.
+- The correct HackRF One plus PortaPack H4M build is Mayhem's default HackRF configuration: root CMake with no `-DBOARD=PRALINE`.
+- The official Docker build flow was used with the arm64 Mayhem build image on Apple Silicon. The image installs GNU Arm Embedded 9.2.1 inside the container.
+- Default HackRF build completed successfully in `build-hackrf-h4m` with `FLASH_MB_SIZE=2MB`, `FLASH_MB_LIMIT_SIZE=1MB`, and tier 0 external apps.
+- The generated package includes `APPS/noaa_same.ppma` and `FIRMWARE/portapack-mayhem_dev.bin`.
+- The generated NOAA/SAME app image contains the `PNOS` M4 image tag, and `build-hackrf-h4m/firmware/baseband/PNOS.bin` plus `baseband_noaa_same.elf` were produced.
 
 Not yet validated:
 
-- H4M firmware compilation with the official ARM embedded toolchain.
 - Baseband real-time behavior for one, two, and three active FM demodulators.
 - Whether seven measurement channels plus three demodulators meet the M4 deadline with margin.
 - Actual RF sensitivity, channel qualification thresholds, and noise-floor ranking behavior.

@@ -9,9 +9,10 @@
  * any later version.
  */
 
-#include "external_app.hpp"
-#include "ui_navigation.hpp"
+#include "ui.hpp"
 #include "ui_noaa_same.hpp"
+#include "ui_navigation.hpp"
+#include "external_app.hpp"
 
 namespace ui::external_app::noaa_same {
 void initialize_app(ui::NavigationView& nav) {
