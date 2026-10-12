@@ -133,6 +133,10 @@ set(EXTCPPSRC
 	external/noaaapt_rx/main.cpp
 	external/noaaapt_rx/ui_noaaapt_rx.cpp
 
+	#noaa_same
+	external/noaa_same/main.cpp
+	external/noaa_same/ui_noaa_same.cpp
+
 	#vor_rx
 	external/vor_rx/main.cpp
 	external/vor_rx/ui_vor_rx.cpp
@@ -463,6 +467,7 @@ set(EXTAPPLIST
 	acars_rx
 	wefax_rx
 	noaaapt_rx
+	noaa_same
 	vor_rx
 	vor_tx
 	shoppingcart_lock

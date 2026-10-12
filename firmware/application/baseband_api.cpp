@@ -369,6 +369,16 @@ void set_noaaapt_config() {
     send_message(&message);
 }
 
+void set_noaa_same_config(const std::array<uint32_t, NoaaSameConfigureMessage::max_decoders>& frequencies,
+                          bool audio_enabled,
+                          uint8_t audio_slot,
+                          bool immediate_override) {
+    const NoaaSameConfigureMessage message{frequencies, audio_enabled, audio_slot, immediate_override};
+    send_message(&message);
+    if (audio_enabled)
+        audio::set_rate(audio::Rate::Hz_24000);
+}
+
 void set_vor_config(bool enabled) {
     const VorRxConfigureMessage message{enabled};
     send_message(&message);

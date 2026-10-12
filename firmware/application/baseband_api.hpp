@@ -31,6 +31,7 @@
 
 #include "spi_image.hpp"
 
+#include <array>
 #include <cstddef>
 
 namespace baseband {
@@ -115,6 +116,10 @@ void set_morsetx_config(uint8_t mode, uint32_t tone, float fm_delta);
 void set_morsetx_key(bool key_down);
 void set_wefax_config(uint8_t lpm, uint8_t ioc);
 void set_noaaapt_config();
+void set_noaa_same_config(const std::array<uint32_t, NoaaSameConfigureMessage::max_decoders>& frequencies,
+                          bool audio_enabled = false,
+                          uint8_t audio_slot = 0,
+                          bool immediate_override = false);
 void set_vor_config(bool enabled = true);
 void set_vor_tx_config(uint16_t radial_deg, bool ident_enabled = true, const std::string& ident = "", bool enabled = true);
 void set_flex_config();

@@ -733,6 +733,13 @@ set(MODE_CPPSRC
 )
 DeclareTargets(PNOA noaaapt_rx)
 
+### NOAA Weather Radio + SAME monitor
+
+set(MODE_CPPSRC
+	proc_noaa_same.cpp
+)
+DeclareTargets(PNOS noaa_same)
+
 ### Audio transmit
 
 set(MODE_CPPSRC

@@ -180,6 +180,8 @@ class Message {
         SpecAnCaptured = 121,
         SpecAnSlice = 122,
         WMBusPacketMessageID = 123,
+        NoaaSameConfigure = 124,
+        NoaaSameStatus = 125,
         MAX
     };
 
@@ -572,6 +574,58 @@ class AFSKDataMessage : public Message {
 
     bool is_data;
     uint32_t value;
+};
+
+struct NoaaSameChannelStatus {
+    int16_t power_db{-120};
+    int16_t relative_db{0};
+    bool qualified{false};
+};
+
+struct NoaaSameDecoderSlotStatus {
+    uint8_t channel{0xff};
+    bool active{false};
+    bool same_busy{false};
+    uint32_t audio_blocks{0};
+};
+
+class NoaaSameConfigureMessage : public Message {
+   public:
+    static constexpr size_t max_decoders = 3;
+
+    constexpr NoaaSameConfigureMessage(
+        const std::array<uint32_t, max_decoders>& frequencies,
+        bool audio_enabled = false,
+        uint8_t audio_slot = 0,
+        bool immediate_override = false)
+        : Message{ID::NoaaSameConfigure},
+          decoder_frequencies{frequencies},
+          audio_enabled{audio_enabled},
+          audio_slot{audio_slot},
+          immediate_override{immediate_override} {
+    }
+
+    std::array<uint32_t, max_decoders> decoder_frequencies{};
+    bool audio_enabled{false};
+    uint8_t audio_slot{0};
+    bool immediate_override{false};
+};
+
+class NoaaSameStatusMessage : public Message {
+   public:
+    static constexpr size_t channel_count = 7;
+    static constexpr size_t max_decoders = 3;
+
+    constexpr NoaaSameStatusMessage()
+        : Message{ID::NoaaSameStatus} {
+    }
+
+    std::array<NoaaSameChannelStatus, channel_count> channels{};
+    std::array<NoaaSameDecoderSlotStatus, max_decoders> decoders{};
+    uint32_t update_count{0};
+    uint32_t baseband_blocks{0};
+    uint32_t deadline_misses{0};
+    uint8_t active_decoders{0};
 };
 
 struct ADV_PDU_PAYLOAD_TYPE_0_2_4_6 {

@@ -1,8 +1,10 @@
-# NOAA Weather Radio + SAME decoder architecture assessment
+# NOAA Weather Radio + SAME decoder architecture assessment v0.6
 
 Baseline: Mayhem `next` at `b0d9973ce1dae7c7d06508a47325987cd94d1e49` (`FM Radio: Restore saved bandwidth when loading a favorite (#3363)`).
 
-Target: standalone HackRF PortaPack H4M operation under Mayhem firmware. This document is an architectural assessment only; it does not implement the application.
+Target: standalone HackRF PortaPack H4M operation under Mayhem firmware.
+
+v0.6 status: first functional monitoring milestone implemented. The milestone adds seven-channel NOAA power measurement, a hard limit of three FM decoder slots, live user-driven reassignment, preset persistence, and a muted-by-default UI. Complete SAME decoding remains intentionally unimplemented.
 
 ## Goals and constraints
 
@@ -156,7 +158,64 @@ Mitigations:
 - Start with compile-time seven-channel support but include a runtime diagnostic mode that can limit active channels to 1, 3, or 7 for profiling.
 - Measure baseband deadline margin on hardware before enabling 7-channel decode by default.
 
-## Recommended implementation plan
+## v0.6 implementation
+
+The v0.6 milestone introduces:
+
+- `firmware/baseband/proc_noaa_same.cpp` and `.hpp`: a new baseband processor tagged `PNOS`;
+- `firmware/application/external/noaa_same/`: a new external RX app named `NOAA SAME`;
+- `NoaaSameConfigureMessage`: application-to-baseband decoder slot assignment as up to three NOAA frequencies in Hz, audio enable, audio slot, and immediate override flag;
+- `NoaaSameStatusMessage`: baseband-to-application seven-channel power, relative power, qualifier state, decoder slot status, update counters, and diagnostic counters;
+- `/NOAA/PRESETS.TXT`: simple SD-card preset persistence for three named presets, `P1` through `P3`.
+
+The baseband is centered on 162.475 MHz. The seven monitored channels are fixed offsets from that center:
+
+- -75 kHz: 162.400 MHz;
+- -50 kHz: 162.425 MHz;
+- -25 kHz: 162.450 MHz;
+- 0 kHz: 162.475 MHz;
+- +25 kHz: 162.500 MHz;
+- +50 kHz: 162.525 MHz;
+- +75 kHz: 162.550 MHz.
+
+The DSP chain shares the first two decimation stages, then runs seven per-channel translators and channel filters for measurement. FM demodulation is limited to the three configured decoder slots. Decoder assignment crosses the app/baseband boundary as frequencies, which lets a future GPS-assisted selector submit a top-three frequency list without depending on UI channel indexes. The baseband maps supported NOAA frequencies to its fixed channelizers. Each slot has independent demodulator state and is reset only when that slot's assigned channel changes. A SAME state-machine hook is present at each decoder slot, but the actual SAME decoder is deferred.
+
+The application supports three assignment paths:
+
+- Manual: each of three decoder slot fields can be changed independently.
+- Presets: `P1`, `P2`, and `P3` load/save up to three NOAA channel indexes on the SD card, then submit the corresponding frequencies to the shared decoder-assignment interface.
+- Recommendation: the UI collects approximately two seconds of status updates, ranks channels by measured power above the observed floor, and displays a pending top-three recommendation. The user must press `Apply`; no continuous automatic reassignment is performed.
+
+Audio policy in v0.6:
+
+- weather audio is off on startup;
+- audible alerts are not implemented;
+- channel reassignment never enables audio;
+- the `Audio` checkbox is the only path that starts audio output;
+- disabling audio stops audio output and keeps decoder assignments intact.
+
+The UI exposes the minimum hardware-test diagnostics: seven channel rows, three decoder slot states, active decoder count, a CPU/utilization display derived from the existing M4 performance counter, and a deadline-miss field reserved for measured baseband deadline accounting.
+
+## Current validation state
+
+Local configure checks performed:
+
+- Root CMake configure for `-DBOARD=PRALINE` was attempted. The external app tier updater ran and regenerated/validated the tier linker scripts.
+- The configure could not proceed to compilation because `arm-none-eabi-gcc` and `arm-none-eabi-g++` are not installed in this environment.
+- A direct `firmware` subdirectory CMake attempt also failed before project compilation because the host AppleClang/macOS SDK installation cannot link a trivial test program.
+
+Not yet validated:
+
+- H4M firmware compilation with the official ARM embedded toolchain.
+- Baseband real-time behavior for one, two, and three active FM demodulators.
+- Whether seven measurement channels plus three demodulators meet the M4 deadline with margin.
+- Actual RF sensitivity, channel qualification thresholds, and noise-floor ranking behavior.
+- Audio output behavior on physical H4M hardware.
+- SD-card preset read/write behavior on the target filesystem.
+
+Do not treat v0.6 as real-time validated until tested on physical H4M hardware.
+
+## Future implementation plan
 
 ### Phase 1: New receive-only baseband image
 
