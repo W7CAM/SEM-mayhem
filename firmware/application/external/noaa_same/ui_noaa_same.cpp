@@ -36,11 +36,16 @@ constexpr std::array<rf::Frequency, NoaaSameStatusMessage::channel_count> noaa_f
     162550000,
 }};
 
-const std::filesystem::path noaa_dir{u"/NOAA"};
-const std::filesystem::path presets_path{u"/NOAA/PRESETS.TXT"};
-
 int parse_digit(char c) {
     return (c >= '0' && c <= '9') ? c - '0' : -1;
+}
+
+std::filesystem::path noaa_dir() {
+    return {u"/NOAA"};
+}
+
+std::filesystem::path presets_path() {
+    return {u"/NOAA/PRESETS.TXT"};
 }
 
 }  // namespace
@@ -319,7 +324,7 @@ void NoaaSameView::save_selected_preset() {
 }
 
 void NoaaSameView::load_presets() {
-    auto result = File::read_file(presets_path);
+    auto result = File::read_file(presets_path());
     if (!result)
         return;
 
@@ -347,10 +352,10 @@ void NoaaSameView::load_presets() {
 }
 
 void NoaaSameView::save_presets() {
-    ensure_directory(noaa_dir);
+    ensure_directory(noaa_dir());
 
     File file{};
-    auto error = file.create(presets_path);
+    auto error = file.create(presets_path());
     if (error) {
         text_status.set("Preset save error");
         return;

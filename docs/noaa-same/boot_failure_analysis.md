@@ -1,10 +1,168 @@
 # NOAA/SAME Boot Failure Analysis
 
-Version: v0.1  
-Date: 2026-10-12  
-Branch: `feature/noaa-same`  
-Baseline: `b0d9973ce1dae7c7d06508a47325987cd94d1e49` (`next`)  
-Analyzed NOAA branch head: `65307e5a5945e52be8efea956e3e438a5dc60b21`
+Version: v0.2<br>
+Date: 2026-10-12<br>
+Branch: `feature/noaa-same`<br>
+Baseline: `b0d9973ce1dae7c7d06508a47325987cd94d1e49` (`next`)<br>
+Failed-image source head: `0ab910c9ea9cfac66fa5b6821c220f5630d3b839`<br>
+Candidate change: remove NOAA external-app dynamic startup initializer
+
+## Test B Addendum
+
+Test B flashed the custom raw firmware image with the SD card removed. The device still failed to boot. This eliminates the SD-card package and external `.ppma` loading as necessary causes.
+
+The failed SHA-256 was matched to the local raw build artifact before rebuilding:
+
+```text
+7fed03eccd461c2f37831002650da159bc9b5649ec8c103db92a1bff320b24cd  build-hackrf-h4m/firmware/portapack-mayhem-firmware.bin
+```
+
+After applying the diagnostic candidate change described below, the rebuilt raw firmware SHA-256 is:
+
+```text
+59d0c416459be5a0843b28b62bf2c1b00f0080d1f6ff415e8d9b31342e79d3d8  build-hackrf-h4m/firmware/portapack-mayhem-firmware.bin
+```
+
+This new image is the single highest-value next hardware experiment. It keeps the NOAA feature, PNOS baseband registration, and external app registration present, but removes the startup-time dynamic initializer that points into the synthetic external-app address range. Passing or failing this image cleanly separates the suspected boot-time constructor fault from the remaining PNOS/shared-plumbing hypotheses.
+
+Do not treat this as a verified fix until the image boots on the HackRF One R10 + PortaPack H4M.
+
+## Ranked Root Cause After Test B
+
+1. Boot-time C++ initializer points into external app link space
+
+   The failed image contains an extra startup initializer entry at application offset `0x434`:
+
+   ```text
+   failed application.bin @ 0x430:
+   49040000 191a14ae 55460000 d1460000 ...
+   ```
+
+   Interpreted little-endian, `191a14ae` is `0xAE141A19`, a Thumb function pointer into `ram_external_app_noaa_same`. That address range is a synthetic linker region used for external app packaging; it is not valid executable memory at normal M0 boot.
+
+   The map identifies the target as:
+
+   ```text
+   ae141a18 t _GLOBAL__sub_I__ZN2ui12external_app9noaa_same12NoaaSameViewC2ERNS_14NavigationViewE
+   ```
+
+   The source cause was global dynamic initialization in `firmware/application/external/noaa_same/ui_noaa_same.cpp`:
+
+   ```cpp
+   const std::filesystem::path noaa_dir{u"/NOAA"};
+   const std::filesystem::path presets_path{u"/NOAA/PRESETS.TXT"};
+   ```
+
+   The linker correctly placed the NOAA external app code and data in `ram_external_app_noaa_same`, but the `.init_array` entry was left in the internal application startup path. On boot, the C++ runtime would call through a pointer to `0xAE141A19`, causing an early fault before UI startup.
+
+2. PNOS/baseband image registration
+
+   PNOS remains a lower-probability cause. The failed and candidate images both include `PNOS.bin`, and `baseband.img` remains 315,680 bytes. Startup does not request PNOS; it is only loaded when the NOAA view calls `baseband::run_image(image_tag_noaa_same)`.
+
+   This should still be isolated if the candidate image fails to boot.
+
+3. Shared-message ABI effects
+
+   The added message IDs and classes are not the leading cause. `Message::MAX_SIZE` remains 512 bytes, `MessageQueue` stores byte copies into fixed queue buffers, and `SharedMemory` stores queues, pointers, and a separate 512-byte `bb_data` union. Adding `NoaaSameConfigureMessage` and `NoaaSameStatusMessage` does not resize the queue buffers or shared memory layout by itself.
+
+4. General flash/header/layout corruption
+
+   The raw image size remains 1,048,576 bytes. The initial vector table is structurally sane in baseline, failed, and candidate images:
+
+   ```text
+   initial SP: 0x20000400
+   failed reset vector:    0x00008085
+   baseline reset vector:  0x0000807d
+   candidate reset vector: 0x00008085
+   ```
+
+   The reset-vector shift is consistent with ordinary code layout movement and is not suspicious by itself.
+
+## Boot Layout Evidence
+
+The raw firmware generator concatenates `application.bin`, `baseband.img`, padding, and a checksum into a 1 MiB SPI image. It rejects images that exceed flash capacity and reports remaining flash space.
+
+Current bootloader/runtime expectations from source:
+
+- `firmware/tools/make_spi_image.py` reads application and baseband binaries, pads them, and writes the raw image plus checksum.
+- `firmware/common/spi_image.hpp` defines the application region starting at flash offset `0x00000`.
+- `firmware/common/spi_image.hpp` defines the baseband image region as starting at `_textend`, after the internal application image.
+- `firmware/application/core_control.cpp` scans the SPI image chunk list from `spi_flash::images.base()` and loads an M4 image by tag.
+- `firmware/application/main.cpp` enters the PortaPack event loop before loading `image_tag_hackrf` after exit.
+
+The boot failure occurs before any SD-card `.ppma` load is necessary, and the binary evidence now shows an internal application startup-table entry pointing at the NOAA external-app region.
+
+## Candidate Diagnostic Change
+
+The diagnostic candidate changes the two global `std::filesystem::path` objects into functions returning path temporaries:
+
+```cpp
+std::filesystem::path noaa_dir() {
+    return {u"/NOAA"};
+}
+
+std::filesystem::path presets_path() {
+    return {u"/NOAA/PRESETS.TXT"};
+}
+```
+
+After this change, the startup table at `application.bin` offset `0x430` no longer contains a NOAA external-app pointer:
+
+```text
+candidate application.bin @ 0x430:
+49040000 55460000 d1460000 4d470000 05480000 00000000 ...
+```
+
+The map still contains NOAA code under `ram_external_app_noaa_same`, as expected, but `.init_array` contains only the normal internal/libstdc++ startup entries:
+
+```text
+.init_array 0x00000430 /tmp/application.elf...ltrans0.ltrans.o
+.init_array 0x00000434 libstdc++_nano.a(cxx11-locale-inst.o)
+.init_array 0x00000438 libstdc++_nano.a(cxx11-wlocale-inst.o)
+.init_array 0x0000043c libstdc++_nano.a(locale-inst.o)
+.init_array 0x00000440 libstdc++_nano.a(wlocale-inst.o)
+```
+
+Current candidate artifact sizes:
+
+| Artifact | Size |
+| --- | ---: |
+| `portapack-mayhem-firmware.bin` | 1,048,576 |
+| `application.bin` | 688,836 |
+| `baseband.img` | 315,680 |
+| `noaa_same.ppma` | 28,132 |
+
+The package still contains both `FIRMWARE/portapack-mayhem_dev.bin` and `APPS/noaa_same.ppma`.
+
+## Minimal Diagnostic Test Matrix
+
+Test first:
+
+1. `candidate-noaa-no-global-path-init`
+   - Artifact: `build-hackrf-h4m/firmware/portapack-mayhem-firmware.bin`
+   - SHA-256: `59d0c416459be5a0843b28b62bf2c1b00f0080d1f6ff415e8d9b31342e79d3d8`
+   - SD card: removed
+   - Expected diagnostic value: highest. If this boots, the `0xAE141A19` startup initializer was the root cause. If it fails, continue below.
+
+If the candidate fails:
+
+2. `shared-plumbing-only`
+   - Keep `message.hpp` additions and `baseband_api` plumbing.
+   - Remove NOAA external app registration and PNOS declaration.
+   - Purpose: isolate message/API changes from image/app registration.
+
+3. `shared-plus-pnos`
+   - Keep shared plumbing and `DeclareTargets(PNOS noaa_same)`.
+   - Remove NOAA external app registration.
+   - Purpose: test whether adding the baseband image changes packed image layout enough to affect boot.
+
+4. `shared-plus-external-metadata-no-pnos`
+   - Keep NOAA external app metadata but remove bundled PNOS dependency and any dynamic initialization.
+   - Purpose: test external-app registration/linker layout without adding the PNOS baseband image.
+
+5. `full-noaa-with-runtime-paths`
+   - Current candidate source: full NOAA feature retained, no global filesystem path construction.
+   - Purpose: confirm the app can appear and launch after raw boot is proven.
 
 ## Scope
 
