@@ -578,6 +578,7 @@ class AFSKDataMessage : public Message {
 
 struct NoaaSameChannelStatus {
     int16_t power_db{-120};
+    int16_t power_30s_db{-120};
     int16_t relative_db{0};
     bool qualified{false};
 };

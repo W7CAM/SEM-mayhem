@@ -44,17 +44,17 @@ constexpr std::array<uint32_t, NoaaSameStatusMessage::channel_count> noaa_freque
 }};
 
 constexpr int16_t minimum_qualified_relative_db = 6;
+constexpr uint32_t power_smooth_tau_ms = 30000;
 
-uint32_t max_magnitude_squared(const buffer_c16_t& src) {
-    uint32_t max_mag_sq = 0;
+uint64_t complex_power_sum(const buffer_c16_t& src) {
+    uint64_t sum = 0;
     for (size_t i = 0; i < src.count; ++i) {
         const int32_t i_sample = src.p[i].real();
         const int32_t q_sample = src.p[i].imag();
-        const uint32_t mag_sq = static_cast<uint32_t>(i_sample * i_sample + q_sample * q_sample);
-        if (mag_sq > max_mag_sq)
-            max_mag_sq = mag_sq;
+        const uint32_t mag_sq = static_cast<uint32_t>((i_sample * i_sample) + (q_sample * q_sample));
+        sum += mag_sq;
     }
-    return max_mag_sq;
+    return sum;
 }
 
 int16_t magnitude_to_db(uint32_t mag_sq) {
@@ -72,6 +72,17 @@ uint8_t channel_for_frequency(uint32_t frequency) {
     }
 
     return 0xff;
+}
+
+uint32_t smooth_power(uint32_t previous, uint32_t current, uint32_t elapsed_ms) {
+    if (elapsed_ms == 0)
+        return previous;
+
+    const uint32_t alpha_q16 = std::min<uint32_t>(
+        65535,
+        (static_cast<uint64_t>(elapsed_ms) << 16) / (power_smooth_tau_ms + elapsed_ms));
+    const int64_t delta = static_cast<int64_t>(current) - static_cast<int64_t>(previous);
+    return static_cast<uint32_t>(static_cast<int64_t>(previous) + ((delta * alpha_q16) >> 16));
 }
 
 }  // namespace
@@ -114,6 +125,7 @@ void NoaaSameProcessor::execute(const buffer_c8_t& buffer) {
         configure_fs4();
 
     block_count++;
+    status_input_samples += buffer.count;
 
     const auto decim_0_out = decim_0.execute(buffer, common_buffer);
     const auto channelizer_in = decim_1.execute(decim_0_out, common_buffer);
@@ -132,9 +144,8 @@ void NoaaSameProcessor::process_channel(size_t channel_index, const buffer_c16_t
     const auto translated = channel.translator.execute(src, work_buffer);
     const auto channel_out = channel.channel_filter.execute(translated, work_buffer);
 
-    const auto mag_sq = max_magnitude_squared(channel_out);
-    if (mag_sq > channel.max_mag_sq)
-        channel.max_mag_sq = mag_sq;
+    channel.power_sum += complex_power_sum(channel_out);
+    channel.power_samples += channel_out.count;
 
     for (size_t slot_index = 0; slot_index < decoders.size(); ++slot_index) {
         auto& decoder = decoders[slot_index];
@@ -153,15 +164,32 @@ void NoaaSameProcessor::process_channel(size_t channel_index, const buffer_c16_t
 
 void NoaaSameProcessor::update_channel_power() {
     int16_t noise_floor = 120;
+    const uint32_t elapsed_ms = std::max<uint32_t>(
+        1,
+        (static_cast<uint64_t>(status_input_samples) * 1000) / baseband_fs);
+    status_input_samples = 0;
 
     for (auto& channel : channels) {
-        channel.power_db = magnitude_to_db(channel.max_mag_sq);
-        channel.max_mag_sq = 0;
-        noise_floor = std::min(noise_floor, channel.power_db);
+        channel.mean_mag_sq = channel.power_samples > 0
+                                  ? static_cast<uint32_t>(channel.power_sum / channel.power_samples)
+                                  : 0;
+        channel.power_sum = 0;
+        channel.power_samples = 0;
+        channel.power_db = magnitude_to_db(channel.mean_mag_sq);
+
+        if (!channel.smoothed_power_valid) {
+            channel.mean_mag_sq_30s = channel.mean_mag_sq;
+            channel.smoothed_power_valid = true;
+        } else {
+            channel.mean_mag_sq_30s = smooth_power(channel.mean_mag_sq_30s, channel.mean_mag_sq, elapsed_ms);
+        }
+
+        channel.power_30s_db = magnitude_to_db(channel.mean_mag_sq_30s);
+        noise_floor = std::min(noise_floor, channel.power_30s_db);
     }
 
     for (auto& channel : channels) {
-        channel.relative_db = channel.power_db - noise_floor;
+        channel.relative_db = channel.power_30s_db - noise_floor;
         channel.qualified = channel.relative_db >= minimum_qualified_relative_db;
     }
 }
@@ -171,6 +199,7 @@ void NoaaSameProcessor::send_status() {
 
     for (size_t i = 0; i < channels.size(); ++i) {
         message.channels[i].power_db = channels[i].power_db;
+        message.channels[i].power_30s_db = channels[i].power_30s_db;
         message.channels[i].relative_db = channels[i].relative_db;
         message.channels[i].qualified = channels[i].qualified;
     }
@@ -184,7 +213,7 @@ void NoaaSameProcessor::send_status() {
 
     message.update_count = ++status_count;
     message.baseband_blocks = block_count;
-    message.deadline_misses = deadline_misses;
+    message.deadline_misses = shared_memory.m4_buffer_missed;
     message.active_decoders = active_decoder_count();
     shared_memory.application_queue.push(message);
 }

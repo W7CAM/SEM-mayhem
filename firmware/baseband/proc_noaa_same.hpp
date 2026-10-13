@@ -45,10 +45,15 @@ class NoaaSameProcessor : public BasebandProcessor {
     struct ChannelState {
         dsp::FrequencyTranslatingDecimator32By8 translator{};
         dsp::decimate::FIRAndDecimateComplex channel_filter{};
-        uint32_t max_mag_sq{0};
+        uint64_t power_sum{0};
+        uint32_t power_samples{0};
+        uint32_t mean_mag_sq{0};
+        uint32_t mean_mag_sq_30s{0};
         int16_t power_db{-120};
+        int16_t power_30s_db{-120};
         int16_t relative_db{0};
         bool qualified{false};
+        bool smoothed_power_valid{false};
     };
 
     struct DecoderSlot {
@@ -88,8 +93,8 @@ class NoaaSameProcessor : public BasebandProcessor {
     bool audio_enabled{false};
     uint8_t audio_slot{0};
     uint32_t block_count{0};
+    uint32_t status_input_samples{0};
     uint32_t status_count{0};
-    uint32_t deadline_misses{0};
 
     void configure();
     void configure(const NoaaSameConfigureMessage& message);

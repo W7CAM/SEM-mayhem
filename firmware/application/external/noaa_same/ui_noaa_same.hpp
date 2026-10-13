@@ -16,8 +16,10 @@
 #include "event_m0.hpp"
 #include "message.hpp"
 #include "radio_state.hpp"
+#include "recent_entries.hpp"
 #include "ui.hpp"
 #include "ui_navigation.hpp"
+#include "ui_receiver.hpp"
 #include "ui_widget.hpp"
 
 #include <array>
@@ -26,6 +28,29 @@
 
 namespace ui::external_app::noaa_same {
 
+struct NoaaChannelRecentEntry {
+    using Key = uint8_t;
+
+    static constexpr Key invalid_key = 0xff;
+
+    uint8_t channel{invalid_key};
+    int16_t power_db{-120};
+    int16_t power_30s_db{-120};
+    int16_t relative_db{0};
+    bool qualified{false};
+    std::array<bool, NoaaSameStatusMessage::max_decoders> decoder_active{};
+
+    explicit NoaaChannelRecentEntry(uint8_t channel)
+        : channel{channel} {
+    }
+
+    Key key() const {
+        return channel;
+    }
+};
+
+using NoaaChannelRecentEntries = RecentEntries<NoaaChannelRecentEntry>;
+
 class NoaaSameView : public View {
    public:
     explicit NoaaSameView(NavigationView& nav);
@@ -33,6 +58,7 @@ class NoaaSameView : public View {
 
     void focus() override;
     std::string title() const override { return "NOAA SAME"; }
+    static std::string channel_name(uint8_t channel);
 
    private:
     static constexpr size_t channel_count = NoaaSameStatusMessage::channel_count;
@@ -59,9 +85,10 @@ class NoaaSameView : public View {
     std::array<uint8_t, max_decoders> decoder_channels{{3, 4, 5}};
     std::array<uint8_t, max_decoders> pending_recommendation{{channel_off, channel_off, channel_off}};
     std::array<int16_t, channel_count> channel_power{};
-    std::array<int16_t, channel_count> channel_relative{};
+    std::array<int16_t, channel_count> channel_power_30s{};
     std::array<bool, channel_count> channel_qualified{};
     std::array<int16_t, channel_count> scan_power{};
+    std::array<bool, channel_count> scan_qualified{};
     std::array<Preset, 3> presets{{
         {"P1", {{3, 4, 5}}},
         {"P2", {{0, 1, 2}}},
@@ -74,9 +101,10 @@ class NoaaSameView : public View {
     uint8_t scan_seconds_remaining{0};
     uint32_t update_count{0};
     uint32_t baseband_blocks{0};
-    uint32_t deadline_misses{0};
     uint8_t active_decoders{0};
     uint8_t rx_sat_percent{0};
+    uint8_t seconds_until_sort{0};
+    uint32_t rx_overruns{0};
     SignalToken signal_token_tick_second{};
 
     app_settings::SettingsManager settings_{
@@ -87,22 +115,32 @@ class NoaaSameView : public View {
             {"selected_preset"sv, &selected_preset},
         }};
 
+    RecentEntriesColumns columns{
+        {{"Ch", 7},
+         {"Now", 4},
+         {"30s", 4},
+         {"Dec", 3}}};
+    NoaaChannelRecentEntries recent{};
+    RecentEntriesView<NoaaChannelRecentEntries> recent_entries_view{columns, recent};
+
     Labels labels{{
-        {{0, 0}, "NOAA Weather Monitor", Theme::getInstance()->fg_light->foreground},
-        {{0, 16}, "Ch       Pwr  Rel Q", Theme::getInstance()->fg_light->foreground},
+        {{UI_POS_X(0), UI_POS_Y(0)}, "LNA:   VGA:   AMP:", Theme::getInstance()->fg_light->foreground},
         {{0, 144}, "Decoders", Theme::getInstance()->fg_light->foreground},
-        {{0, 208}, "Preset:", Theme::getInstance()->fg_light->foreground},
+        {{0, 200}, "Preset:", Theme::getInstance()->fg_light->foreground},
     }};
 
-    std::array<Text, channel_count> channel_rows{{
-        Text{{0, 32, 240, 16}},
-        Text{{0, 48, 240, 16}},
-        Text{{0, 64, 240, 16}},
-        Text{{0, 80, 240, 16}},
-        Text{{0, 96, 240, 16}},
-        Text{{0, 112, 240, 16}},
-        Text{{0, 128, 240, 16}},
-    }};
+    LNAGainField field_lna{
+        {UI_POS_X(4), UI_POS_Y(0)}};
+
+    VGAGainField field_vga{
+        {UI_POS_X(11), UI_POS_Y(0)}};
+
+    RFAmpField field_rf_amp{
+        {UI_POS_X(18), UI_POS_Y(0)}};
+
+    RSSI rssi{
+        {UI_POS_X(20), 4, UI_POS_WIDTH_REMAINING(23), 8},
+    };
 
     std::array<OptionsField, max_decoders> decoder_fields{{
         OptionsField{{0, 160}, 9, {}},
@@ -117,45 +155,45 @@ class NoaaSameView : public View {
     }};
 
     OptionsField preset_field{
-        {64, 208},
+        {64, 200},
         6,
         {{"P1", 1}, {"P2", 2}, {"P3", 3}}};
 
     OptionsField startup_field{
-        {128, 208},
+        {128, 200},
         10,
         {{"Manual", 0}, {"P1", 1}, {"P2", 2}, {"P3", 3}}};
 
     Checkbox checkbox_audio{
-        {0, 232},
+        {0, 224},
         9,
         "Audio",
         true};
 
     Checkbox checkbox_force{
-        {80, 232},
+        {80, 224},
         9,
         "Force",
         true};
 
     Button button_rescan{
-        {0, 256, 72, 24},
+        {0, 248, 72, 24},
         "Rescan"};
 
     Button button_apply{
-        {80, 256, 72, 24},
+        {80, 248, 72, 24},
         "Apply"};
 
     Button button_load{
-        {160, 256, 72, 24},
+        {160, 248, 72, 24},
         "Load"};
 
     Button button_save{
-        {0, 288, 72, 24},
+        {0, 280, 72, 24},
         "Save"};
 
     Text text_status{
-        {80, 288, 160, 16},
+        {80, 280, 160, 16},
         ""};
 
     Text text_diag{
@@ -180,11 +218,10 @@ class NoaaSameView : public View {
     void on_status(const NoaaSameStatusMessage& message);
     void refresh_ui();
     void refresh_decoder_fields();
+    void sort_recent_entries();
     void set_decoder_from_field(size_t slot, uint8_t channel);
 
     static OptionsField::options_t channel_options();
-    static std::string channel_name(uint8_t channel);
-    static std::string format_channel_row(size_t index, int16_t power, int16_t relative, bool qualified);
     static std::string format_slot_status(const NoaaSameDecoderSlotStatus& slot);
     static uint8_t clamp_channel(int32_t value);
 };

@@ -22,6 +22,36 @@
 
 using namespace portapack;
 
+namespace ui {
+
+template <>
+void RecentEntriesTable<external_app::noaa_same::NoaaChannelRecentEntries>::draw(
+    const Entry& entry,
+    const Rect& target_rect,
+    Painter& painter,
+    const Style& style,
+    RecentEntriesColumns&) {
+    using namespace external_app::noaa_same;
+
+    std::string decoder_text{};
+    for (size_t i = 0; i < entry.decoder_active.size(); ++i) {
+        if (entry.decoder_active[i])
+            decoder_text += to_string_dec_uint(i + 1);
+    }
+    decoder_text.resize(3, ' ');
+
+    std::string line = NoaaSameView::channel_name(entry.channel);
+    line.resize(8, ' ');
+    line += to_string_dec_int(entry.power_db, 4) + " ";
+    line += to_string_dec_int(entry.power_30s_db, 4) + " ";
+    line += decoder_text;
+
+    const Style& item_style = entry.qualified ? style : *Theme::getInstance()->fg_medium;
+    painter.draw_string(target_rect.location(), item_style, line);
+}
+
+}  // namespace ui
+
 namespace ui::external_app::noaa_same {
 
 namespace {
@@ -62,8 +92,17 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
     baseband::run_image(portapack::spi_flash::image_tag_noaa_same);
     configure_receiver();
 
+    for (uint8_t i = 0; i < channel_count; ++i)
+        recent.emplace_back(i);
+    sort_recent_entries();
+
     add_children({
         &labels,
+        &field_lna,
+        &field_vga,
+        &field_rf_amp,
+        &rssi,
+        &recent_entries_view,
         &decoder_fields[0],
         &decoder_fields[1],
         &decoder_fields[2],
@@ -81,8 +120,7 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         &text_status,
         &text_diag,
     });
-    for (auto& row : channel_rows)
-        add_child(&row);
+    recent_entries_view.set_parent_rect({0, 16, screen_width, 128});
 
     for (size_t i = 0; i < decoder_fields.size(); ++i) {
         decoder_fields[i].set_options(channel_options());
@@ -128,7 +166,7 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         decoder_channels = pending_recommendation;
         refresh_decoder_fields();
         send_config(immediate_override);
-        text_status.set("Top 3 applied");
+        text_status.set("Top applied");
     };
 
     button_load.on_select = [this](Button&) {
@@ -157,7 +195,7 @@ NoaaSameView::~NoaaSameView() {
 }
 
 void NoaaSameView::focus() {
-    button_rescan.focus();
+    recent_entries_view.focus();
 }
 
 void NoaaSameView::configure_receiver() {
@@ -202,13 +240,6 @@ uint8_t NoaaSameView::clamp_channel(int32_t value) {
                : channel_off;
 }
 
-std::string NoaaSameView::format_channel_row(size_t index, int16_t power, int16_t relative, bool qualified) {
-    return channel_name(static_cast<uint8_t>(index)) + " " +
-           to_string_dec_int(power, 4) + " " +
-           to_string_dec_int(relative, 3) + " " +
-           (qualified ? "Y" : "-");
-}
-
 std::string NoaaSameView::format_slot_status(const NoaaSameDecoderSlotStatus& slot) {
     if (!slot.active)
         return "Off";
@@ -233,32 +264,47 @@ void NoaaSameView::refresh_decoder_fields() {
 }
 
 void NoaaSameView::refresh_ui() {
-    for (size_t i = 0; i < channel_rows.size(); ++i)
-        channel_rows[i].set(format_channel_row(i, channel_power[i], channel_relative[i], channel_qualified[i]));
-
     rx_sat_percent = static_cast<uint8_t>((static_cast<uint32_t>(shared_memory.m4_performance_counter) * 100) / 127);
     text_diag.set("CPU " + to_string_dec_uint(rx_sat_percent, 3) +
                   "% act " + to_string_dec_uint(active_decoders) +
-                  " miss " + to_string_dec_uint(deadline_misses));
+                  " ov " + to_string_dec_uint(rx_overruns));
 }
 
 void NoaaSameView::on_status(const NoaaSameStatusMessage& message) {
     update_count = message.update_count;
     baseband_blocks = message.baseband_blocks;
-    deadline_misses = message.deadline_misses;
+    rx_overruns = message.deadline_misses;
     active_decoders = message.active_decoders;
 
     for (size_t i = 0; i < channel_count; ++i) {
         channel_power[i] = message.channels[i].power_db;
-        channel_relative[i] = message.channels[i].relative_db;
+        channel_power_30s[i] = message.channels[i].power_30s_db;
         channel_qualified[i] = message.channels[i].qualified;
         if (scanning)
-            scan_power[i] = std::max(scan_power[i], channel_power[i]);
+            scan_power[i] = std::max(scan_power[i], channel_power_30s[i]);
+        if (scanning && channel_qualified[i])
+            scan_qualified[i] = true;
     }
 
-    for (size_t i = 0; i < max_decoders; ++i)
-        decoder_status[i].set(format_slot_status(message.decoders[i]));
+    for (auto& entry : recent) {
+        entry.power_db = channel_power[entry.channel];
+        entry.power_30s_db = channel_power_30s[entry.channel];
+        entry.relative_db = message.channels[entry.channel].relative_db;
+        entry.qualified = channel_qualified[entry.channel];
+        entry.decoder_active.fill(false);
+    }
 
+    for (size_t i = 0; i < max_decoders; ++i) {
+        decoder_status[i].set(format_slot_status(message.decoders[i]));
+        const auto channel = message.decoders[i].channel;
+        if (message.decoders[i].active && channel < channel_count) {
+            auto entry = find(recent, channel);
+            if (entry != recent.end())
+                entry->decoder_active[i] = true;
+        }
+    }
+
+    recent_entries_view.set_dirty();
     refresh_ui();
 }
 
@@ -266,6 +312,7 @@ void NoaaSameView::start_recommendation_scan() {
     scanning = true;
     scan_seconds_remaining = 2;
     scan_power.fill(-120);
+    scan_qualified.fill(false);
     text_status.set("Scanning 2s...");
 }
 
@@ -283,7 +330,7 @@ void NoaaSameView::finish_recommendation_scan() {
     for (auto index : indexes) {
         if (out >= max_decoders)
             break;
-        if (scan_power[index] - noise >= 6)
+        if (scan_qualified[index] && scan_power[index] - noise >= 6)
             pending_recommendation[out++] = index;
     }
 
@@ -294,6 +341,13 @@ void NoaaSameView::finish_recommendation_scan() {
 }
 
 void NoaaSameView::on_tick_second() {
+    if (seconds_until_sort == 0) {
+        sort_recent_entries();
+        seconds_until_sort = 4;
+    } else {
+        seconds_until_sort--;
+    }
+
     if (scanning && scan_seconds_remaining > 0) {
         scan_seconds_remaining--;
         if (scan_seconds_remaining == 0)
@@ -302,6 +356,15 @@ void NoaaSameView::on_tick_second() {
             text_status.set("Scanning " + to_string_dec_uint(scan_seconds_remaining) + "s...");
     }
     refresh_ui();
+}
+
+void NoaaSameView::sort_recent_entries() {
+    recent.sort([](const NoaaChannelRecentEntry& a, const NoaaChannelRecentEntry& b) {
+        if (a.power_30s_db == b.power_30s_db)
+            return a.channel < b.channel;
+        return a.power_30s_db > b.power_30s_db;
+    });
+    recent_entries_view.set_dirty();
 }
 
 void NoaaSameView::load_selected_preset() {
