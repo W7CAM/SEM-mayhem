@@ -102,6 +102,7 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         &field_vga,
         &field_rf_amp,
         &rssi,
+        &field_volume,
         &recent_entries_view,
         &decoder_fields[0],
         &decoder_fields[1],
@@ -113,6 +114,7 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         &startup_field,
         &checkbox_audio,
         &checkbox_force,
+        &audio_source_field,
         &button_rescan,
         &button_apply,
         &button_load,
@@ -156,6 +158,15 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
     checkbox_force.set_value(false);
     checkbox_force.on_select = [this](Checkbox&, bool v) {
         immediate_override = v;
+    };
+
+    audio_source_field.set_selected_index(audio_slot, false);
+    audio_source_field.on_change = [this](size_t, OptionsField::value_t v) {
+        audio_slot = v >= 0 && v < static_cast<int32_t>(max_decoders)
+                         ? static_cast<uint8_t>(v)
+                         : 0;
+        send_config(false);
+        text_status.set("Monitor D" + to_string_dec_uint(audio_slot + 1));
     };
 
     button_rescan.on_select = [this](Button&) {
@@ -212,7 +223,7 @@ void NoaaSameView::send_config(bool immediate) {
             frequencies[i] = noaa_frequencies[decoder_channels[i]];
     }
 
-    baseband::set_noaa_same_config(frequencies, audio_enabled, 0, immediate);
+    baseband::set_noaa_same_config(frequencies, audio_enabled, audio_slot, immediate);
 }
 
 OptionsField::options_t NoaaSameView::channel_options() {
@@ -295,7 +306,7 @@ void NoaaSameView::on_status(const NoaaSameStatusMessage& message) {
     }
 
     for (size_t i = 0; i < max_decoders; ++i) {
-        decoder_status[i].set(format_slot_status(message.decoders[i]));
+        decoder_status[i].set((i == audio_slot ? ">" : " ") + format_slot_status(message.decoders[i]));
         const auto channel = message.decoders[i].channel;
         if (message.decoders[i].active && channel < channel_count) {
             auto entry = find(recent, channel);

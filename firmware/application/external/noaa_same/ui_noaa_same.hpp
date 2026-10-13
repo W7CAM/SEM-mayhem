@@ -97,6 +97,7 @@ class NoaaSameView : public View {
 
     bool audio_enabled{false};
     bool immediate_override{false};
+    uint8_t audio_slot{0};
     bool scanning{false};
     uint8_t scan_seconds_remaining{0};
     uint32_t update_count{0};
@@ -127,6 +128,7 @@ class NoaaSameView : public View {
         {{UI_POS_X(0), UI_POS_Y(0)}, "LNA:   VGA:   AMP:", Theme::getInstance()->fg_light->foreground},
         {{0, 144}, "Decoders", Theme::getInstance()->fg_light->foreground},
         {{0, 200}, "Preset:", Theme::getInstance()->fg_light->foreground},
+        {{144, 224}, "Mon:", Theme::getInstance()->fg_light->foreground},
     }};
 
     LNAGainField field_lna{
@@ -141,6 +143,9 @@ class NoaaSameView : public View {
     RSSI rssi{
         {UI_POS_X(20), 4, UI_POS_WIDTH_REMAINING(23), 8},
     };
+
+    AudioVolumeField field_volume{
+        {UI_POS_X_RIGHT(2), UI_POS_Y(0)}};
 
     std::array<OptionsField, max_decoders> decoder_fields{{
         OptionsField{{0, 160}, 9, {}},
@@ -166,15 +171,20 @@ class NoaaSameView : public View {
 
     Checkbox checkbox_audio{
         {0, 224},
-        9,
+        5,
         "Audio",
         true};
 
     Checkbox checkbox_force{
-        {80, 224},
-        9,
+        {72, 224},
+        5,
         "Force",
         true};
+
+    OptionsField audio_source_field{
+        {184, 224},
+        4,
+        {{"D1", 0}, {"D2", 1}, {"D3", 2}}};
 
     Button button_rescan{
         {0, 248, 72, 24},
