@@ -34,11 +34,11 @@ void RecentEntriesTable<external_app::noaa_same::NoaaChannelRecentEntries>::draw
     using namespace external_app::noaa_same;
 
     std::string decoder_text{};
-    for (size_t i = 0; i < entry.decoder_active.size(); ++i) {
-        if (entry.decoder_active[i])
-            decoder_text += to_string_dec_uint(i + 1);
+    if (entry.decoder_slot != NoaaChannelRecentEntry::invalid_key) {
+        decoder_text = to_string_dec_uint(entry.decoder_slot + 1);
+        decoder_text += entry.audio_source ? ">" : " ";
     }
-    decoder_text.resize(3, ' ');
+    decoder_text.resize(4, ' ');
 
     std::string line = NoaaSameView::channel_name(entry.channel);
     line.resize(8, ' ');
@@ -104,17 +104,9 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         &rssi,
         &field_volume,
         &recent_entries_view,
-        &decoder_fields[0],
-        &decoder_fields[1],
-        &decoder_fields[2],
-        &decoder_status[0],
-        &decoder_status[1],
-        &decoder_status[2],
         &preset_field,
         &startup_field,
         &checkbox_audio,
-        &checkbox_force,
-        &audio_source_field,
         &button_rescan,
         &button_apply,
         &button_load,
@@ -123,13 +115,9 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         &text_diag,
     });
     recent_entries_view.set_parent_rect({0, 16, screen_width, 128});
-
-    for (size_t i = 0; i < decoder_fields.size(); ++i) {
-        decoder_fields[i].set_options(channel_options());
-        decoder_fields[i].on_change = [this, i](size_t, OptionsField::value_t v) {
-            set_decoder_from_field(i, clamp_channel(v));
-        };
-    }
+    recent_entries_view.on_select = [this](const NoaaChannelRecentEntry& entry) {
+        toggle_channel(entry.channel);
+    };
 
     preset_field.set_selected_index(selected_preset > 0 && selected_preset <= 3 ? selected_preset - 1 : 0, false);
     preset_field.on_change = [this](size_t, OptionsField::value_t v) {
@@ -155,28 +143,14 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         send_config(false);
     };
 
-    checkbox_force.set_value(false);
-    checkbox_force.on_select = [this](Checkbox&, bool v) {
-        immediate_override = v;
-    };
-
-    audio_source_field.set_selected_index(audio_slot, false);
-    audio_source_field.on_change = [this](size_t, OptionsField::value_t v) {
-        audio_slot = v >= 0 && v < static_cast<int32_t>(max_decoders)
-                         ? static_cast<uint8_t>(v)
-                         : 0;
-        send_config(false);
-        text_status.set("Monitor D" + to_string_dec_uint(audio_slot + 1));
-    };
-
     button_rescan.on_select = [this](Button&) {
         start_recommendation_scan();
     };
 
     button_apply.on_select = [this](Button&) {
         decoder_channels = pending_recommendation;
-        refresh_decoder_fields();
-        send_config(immediate_override);
+        sanitize_audio_slot();
+        send_config(true);
         text_status.set("Top applied");
     };
 
@@ -192,7 +166,7 @@ NoaaSameView::NoaaSameView(NavigationView& nav)
         on_tick_second();
     };
 
-    refresh_decoder_fields();
+    sanitize_audio_slot();
     refresh_ui();
     send_config(false);
 }
@@ -226,19 +200,6 @@ void NoaaSameView::send_config(bool immediate) {
     baseband::set_noaa_same_config(frequencies, audio_enabled, audio_slot, immediate);
 }
 
-OptionsField::options_t NoaaSameView::channel_options() {
-    return {
-        {"Off", channel_off},
-        {"162.400", 0},
-        {"162.425", 1},
-        {"162.450", 2},
-        {"162.475", 3},
-        {"162.500", 4},
-        {"162.525", 5},
-        {"162.550", 6},
-    };
-}
-
 std::string NoaaSameView::channel_name(uint8_t channel) {
     if (channel >= channel_count)
         return "Off";
@@ -249,29 +210,6 @@ uint8_t NoaaSameView::clamp_channel(int32_t value) {
     return (value >= 0 && value < static_cast<int32_t>(channel_count))
                ? static_cast<uint8_t>(value)
                : channel_off;
-}
-
-std::string NoaaSameView::format_slot_status(const NoaaSameDecoderSlotStatus& slot) {
-    if (!slot.active)
-        return "Off";
-    return std::string(slot.same_busy ? "Busy " : "Ready") + " " + channel_name(slot.channel);
-}
-
-void NoaaSameView::set_decoder_from_field(size_t slot, uint8_t channel) {
-    if (slot >= decoder_channels.size())
-        return;
-
-    decoder_channels[slot] = channel;
-    send_config(immediate_override);
-    text_status.set("Slot changed");
-}
-
-void NoaaSameView::refresh_decoder_fields() {
-    for (size_t i = 0; i < decoder_fields.size(); ++i) {
-        const auto channel = decoder_channels[i];
-        const size_t option_index = channel < channel_count ? channel + 1 : 0;
-        decoder_fields[i].set_selected_index(option_index, false);
-    }
 }
 
 void NoaaSameView::refresh_ui() {
@@ -302,16 +240,18 @@ void NoaaSameView::on_status(const NoaaSameStatusMessage& message) {
         entry.power_30s_db = channel_power_30s[entry.channel];
         entry.relative_db = message.channels[entry.channel].relative_db;
         entry.qualified = channel_qualified[entry.channel];
-        entry.decoder_active.fill(false);
+        entry.decoder_slot = NoaaChannelRecentEntry::invalid_key;
+        entry.audio_source = false;
     }
 
     for (size_t i = 0; i < max_decoders; ++i) {
-        decoder_status[i].set((i == audio_slot ? ">" : " ") + format_slot_status(message.decoders[i]));
         const auto channel = message.decoders[i].channel;
         if (message.decoders[i].active && channel < channel_count) {
             auto entry = find(recent, channel);
-            if (entry != recent.end())
-                entry->decoder_active[i] = true;
+            if (entry != recent.end()) {
+                entry->decoder_slot = i;
+                entry->audio_source = (i == audio_slot);
+            }
         }
     }
 
@@ -378,13 +318,88 @@ void NoaaSameView::sort_recent_entries() {
     recent_entries_view.set_dirty();
 }
 
+void NoaaSameView::toggle_channel(uint8_t channel) {
+    if (channel >= channel_count)
+        return;
+
+    const auto slot = slot_for_channel(channel);
+    if (slot < 0) {
+        if (assign_channel(channel)) {
+            sanitize_audio_slot();
+            send_config(true);
+            text_status.set("Decoder assigned");
+        } else {
+            text_status.set("Max 3 decoders");
+        }
+        return;
+    }
+
+    if (audio_slot != static_cast<uint8_t>(slot)) {
+        audio_slot = static_cast<uint8_t>(slot);
+        send_config(false);
+        text_status.set("Monitor " + channel_name(channel));
+        recent_entries_view.set_dirty();
+        return;
+    }
+
+    release_channel(channel);
+    sanitize_audio_slot();
+    send_config(true);
+    text_status.set("Decoder off");
+}
+
+void NoaaSameView::release_channel(uint8_t channel) {
+    for (auto& decoder_channel : decoder_channels) {
+        if (decoder_channel == channel)
+            decoder_channel = channel_off;
+    }
+}
+
+bool NoaaSameView::assign_channel(uint8_t channel) {
+    for (auto& decoder_channel : decoder_channels) {
+        if (decoder_channel == channel)
+            return true;
+    }
+
+    for (auto& decoder_channel : decoder_channels) {
+        if (decoder_channel >= channel_count) {
+            decoder_channel = channel;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+int8_t NoaaSameView::slot_for_channel(uint8_t channel) const {
+    for (size_t i = 0; i < decoder_channels.size(); ++i) {
+        if (decoder_channels[i] == channel)
+            return static_cast<int8_t>(i);
+    }
+    return -1;
+}
+
+void NoaaSameView::sanitize_audio_slot() {
+    if (audio_slot < max_decoders && decoder_channels[audio_slot] < channel_count)
+        return;
+
+    for (size_t i = 0; i < decoder_channels.size(); ++i) {
+        if (decoder_channels[i] < channel_count) {
+            audio_slot = i;
+            return;
+        }
+    }
+
+    audio_slot = 0;
+}
+
 void NoaaSameView::load_selected_preset() {
     if (selected_preset == 0 || selected_preset > presets.size())
         return;
 
     decoder_channels = presets[selected_preset - 1].channels;
-    refresh_decoder_fields();
-    send_config(immediate_override);
+    sanitize_audio_slot();
+    send_config(true);
     text_status.set("Loaded " + presets[selected_preset - 1].name);
 }
 

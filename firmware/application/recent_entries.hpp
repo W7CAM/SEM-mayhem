@@ -92,6 +92,13 @@ static std::pair<typename ContainerType::const_iterator, typename ContainerType:
         i++;
     }
 
+    // If the selected item is near the end, backfill from above so a fixed-size
+    // table does not show avoidable blank rows.
+    while ((start != std::begin(entries)) && (i < count)) {
+        std::advance(start, -1);
+        i++;
+    }
+
     return {start, end};
 }
 
@@ -243,6 +250,26 @@ class RecentEntriesTable : public Widget {
         return false;
     }
 
+    bool on_touch(const TouchEvent event) override {
+        if (event.type == TouchEvent::Type::Start) {
+            focus();
+            select_at(event.point);
+            return true;
+        }
+
+        if (event.type == TouchEvent::Type::End) {
+            select_at(event.point);
+            if (on_select) {
+                const auto selected = find(recent, selected_key);
+                if (selected != std::end(recent))
+                    on_select(*selected);
+            }
+            return true;
+        }
+
+        return true;
+    }
+
     void on_focus() override {
         advance(0);
     }
@@ -277,6 +304,32 @@ class RecentEntriesTable : public Widget {
         }
 
         set_dirty();
+    }
+
+    void select_at(const Point point) {
+        if (recent.empty())
+            return;
+
+        const auto r = screen_rect();
+        if (!r.contains(point))
+            return;
+
+        const auto& s = style();
+        const size_t visible_item_count = r.height() / s.font.line_height();
+        auto selected = find(recent, selected_key);
+        if (selected == std::end(recent))
+            selected = std::begin(recent);
+
+        const auto range = range_around(recent, selected, visible_item_count);
+        auto item = range.first;
+        const auto row = static_cast<size_t>((point.y() - r.top()) / s.font.line_height());
+        for (size_t i = 0; item != range.second && i < row; ++i)
+            std::advance(item, 1);
+
+        if (item != range.second) {
+            selected_key = item->key();
+            set_dirty();
+        }
     }
 
     void draw(

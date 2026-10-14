@@ -130,8 +130,14 @@ void NoaaSameProcessor::execute(const buffer_c8_t& buffer) {
     const auto decim_0_out = decim_0.execute(buffer, common_buffer);
     const auto channelizer_in = decim_1.execute(decim_0_out, common_buffer);
 
+    bool audio_written = false;
     for (size_t i = 0; i < channels.size(); ++i)
-        process_channel(i, channelizer_in);
+        audio_written = process_channel(i, channelizer_in) || audio_written;
+
+    if (audio_enabled && !audio_written) {
+        audio.fill(0);
+        audio_output.write(audio_buffer);
+    }
 
     if ((block_count % status_interval_blocks) == 0) {
         update_channel_power();
@@ -139,10 +145,11 @@ void NoaaSameProcessor::execute(const buffer_c8_t& buffer) {
     }
 }
 
-void NoaaSameProcessor::process_channel(size_t channel_index, const buffer_c16_t& src) {
+bool NoaaSameProcessor::process_channel(size_t channel_index, const buffer_c16_t& src) {
     auto& channel = channels[channel_index];
     const auto translated = channel.translator.execute(src, work_buffer);
     const auto channel_out = channel.channel_filter.execute(translated, work_buffer);
+    bool audio_written = false;
 
     channel.power_sum += complex_power_sum(channel_out);
     channel.power_samples += channel_out.count;
@@ -155,11 +162,15 @@ void NoaaSameProcessor::process_channel(size_t channel_index, const buffer_c16_t
         const auto audio_out = decoder.demod.execute(channel_out, audio_buffer);
         decoder.audio_blocks++;
 
-        if (audio_enabled && slot_index == audio_slot)
+        if (audio_enabled && slot_index == audio_slot) {
             audio_output.write(audio_out);
+            audio_written = true;
+        }
 
         /* SAME decoder hook: feed audio_out into this slot's future SAME state machine. */
     }
+
+    return audio_written;
 }
 
 void NoaaSameProcessor::update_channel_power() {

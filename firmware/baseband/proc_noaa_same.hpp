@@ -99,7 +99,7 @@ class NoaaSameProcessor : public BasebandProcessor {
     void configure();
     void configure(const NoaaSameConfigureMessage& message);
     void configure_fs4();
-    void process_channel(size_t channel_index, const buffer_c16_t& src);
+    bool process_channel(size_t channel_index, const buffer_c16_t& src);
     void update_channel_power();
     void send_status();
     uint8_t active_decoder_count() const;
